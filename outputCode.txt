@@ -1,0 +1,163 @@
+const { execSync, spawnSync } = require('child_process');
+const fs = require('fs');
+const readline = require('readline');
+const path = require('path');
+
+(async () => {
+  // ================================
+  // Onion Reconnaissance Tool
+  // Author: You
+  // Platform: Kali Linux
+  // ================================
+
+  // Check required tools
+  const REQUIRED_TOOLS = ['tor', 'torsocks', 'curl', 'whatweb', 'grep', 'awk', 'sed'];
+
+  console.log('[*] Checking required tools...');
+  for (const tool of REQUIRED_TOOLS) {
+    try {
+      execSync(`command -v ${tool}`, { stdio: 'ignore' });
+    } catch {
+      console.error(`[!] Missing tool: ${tool}`);
+      console.error(`    Install it using: sudo apt install ${tool}`);
+      process.exit(1);
+    }
+  }
+  console.log('[✓] All tools found\n');
+
+  // Read target
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const TARGET = await new Promise((resolve) => {
+    rl.question('Enter target .onion domain: ', (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+
+  // Validate onion domain
+  if (!TARGET.endsWith('.onion')) {
+    console.error('[!] Invalid domain. Must end with .onion');
+    process.exit(1);
+  }
+
+  // Output directory
+  const OUTDIR = `output_${TARGET}`;
+  if (!fs.existsSync(OUTDIR)) {
+    fs.mkdirSync(OUTDIR, { recursive: true });
+  }
+
+  console.log(`[*] Output directory created: ${OUTDIR}\n`);
+
+  // Start Tor if not running
+  console.log('[*] Checking Tor service...');
+  try {
+    execSync('sudo systemctl start tor');
+  } catch (e) {
+    // ignore errors here
+  }
+  await new Promise((r) => setTimeout(r, 5000));
+
+  // Verify Tor connectivity
+  console.log('[*] Verifying Tor connection...');
+  try {
+    execSync(`torsocks curl -s --max-time 20 https://check.torproject.org > ${path.join(OUTDIR, 'tor_check.html')}`);
+  } catch {
+    // ignore errors here
+  }
+
+  const torCheckContent = fs.readFileSync(path.join(OUTDIR, 'tor_check.html'), 'utf8');
+  if (torCheckContent.includes('Congratulations')) {
+    console.log('[✓] Tor is working');
+  } else {
+    console.error('[!] Tor verification failed');
+    process.exit(1);
+  }
+  console.log();
+
+  // ================================
+  // Reconnaissance Steps
+  // ================================
+
+  // 1. Headers
+  console.log('[*] Collecting HTTP headers...');
+  try {
+    execSync(`torsocks curl -I --max-time 30 "http://${TARGET}" > ${path.join(OUTDIR, 'headers.txt')} 2>/dev/null`);
+  } catch {
+    // ignore errors here
+  }
+
+  // 2. Technology fingerprinting
+  console.log('[*] Running WhatWeb...');
+  try {
+    execSync(`torsocks whatweb "http://${TARGET}" > ${path.join(OUTDIR, 'whatweb.txt')}`);
+  } catch {
+    // ignore errors here
+  }
+
+  // 3. robots.txt
+  console.log('[*] Fetching robots.txt...');
+  try {
+    execSync(`torsocks curl -s --max-time 30 "http://${TARGET}/robots.txt" > ${path.join(OUTDIR, 'robots.txt')}`);
+  } catch {
+    // ignore errors here
+  }
+
+  // 4. Fetch main page
+  console.log('[*] Downloading homepage...');
+  try {
+    execSync(`torsocks curl -s --max-time 30 "http://${TARGET}" > ${path.join(OUTDIR, 'index.html')}`);
+  } catch {
+    // ignore errors here
+  }
+
+  // 5. Extract HTML comments
+  console.log('[*] Extracting HTML comments...');
+  try {
+    execSync(`grep "<!--" ${path.join(OUTDIR, 'index.html')} > ${path.join(OUTDIR, 'html_comments.txt')}`);
+  } catch {
+    // ignore errors here
+  }
+
+  // 6. Extract JavaScript files
+  console.log('[*] Extracting JavaScript files...');
+  try {
+    execSync(`grep -oP '(?<=src=")[^"]+\\.js' ${path.join(OUTDIR, 'index.html')} > ${path.join(OUTDIR, 'javascript_files.txt')}`);
+  } catch {
+    // ignore errors here
+  }
+
+  // 7. Light directory discovery
+  console.log('[*] Performing light directory discovery...');
+  const COMMON_DIRS = ['admin', 'login', 'dashboard', 'uploads', 'images', 'css', 'js', 'backup'];
+
+  for (const dir of COMMON_DIRS) {
+    try {
+      const status = execSync(`torsocks curl -o /dev/null -s -w "%{http_code}" "http://${TARGET}/${dir}/"`, { encoding: 'utf8' }).trim();
+      if (status === '200' || status === '403') {
+        fs.appendFileSync(path.join(OUTDIR, 'directories.txt'), `/${dir} - ${status}\n`);
+      }
+    } catch {
+      // ignore errors here
+    }
+  }
+
+  // ================================
+  // Finish
+  // ================================
+
+  console.log();
+  console.log('[✓] Reconnaissance completed!');
+  console.log(`[✓] Results saved in: ${OUTDIR}`);
+  console.log();
+
+  try {
+    const files = fs.readdirSync(OUTDIR);
+    files.forEach((file) => console.log(file));
+  } catch {
+    // ignore errors here
+  }
+})();
